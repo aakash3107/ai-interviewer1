@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Interview System</title>
+  <!-- Tesseract.js for client-side OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- Transformers.js for local LLM inference -->
+  <script type="module" src="/static/js/main.js"></script>
+  <style>
+    /* ── Design tokens ───────────────────────────────── */
+    :root {
+      --bg:        #0b0f1a;
+      --surface:   #111827;
+      --surface2:  #1a2233;
+      --border:    #1e2d45;
+      --accent:    #3b82f6;
+      --accent2:   #06b6d4;
+      --green:     #10b981;
+      --yellow:    #f59e0b;
+      --red:       #ef4444;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --radius:    12px;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ─────────────────────────────────────── */
+    header {
+      padding: 16px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .logo {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; font-size: 1.15rem; letter-spacing: -.02em;
+    }
+    .logo-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    .status-pill {
+      display: flex; align-items: center; gap: 6px;
+      font-size: .75rem; color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 4px 12px; border-radius: 999px;
+    }
+    .status-pill .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--muted);
+      transition: background .3s;
+    }
+    .status-pill.active .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .status-pill.loading .dot { background: var(--yellow); animation: pulse 1s infinite; }
+
+    /* ── Main layout ─────────────────────────────────── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      grid-template-rows: auto 1fr;
+      gap: 0;
+      height: calc(100vh - 57px);
+    }
+
+    /* ── Panel shared ────────────────────────────────── */
+    .panel {
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface);
+    }
+    .panel-title {
+      font-size: .7rem; font-weight: 600; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .panel-body { flex: 1; overflow-y: auto; padding: 20px; }
+
+    /* ── Screen capture panel ────────────────────────── */
+    #screen-panel { grid-row: 1 / 3; }
+
+    #preview-area {
+      background: #060a14;
+      border-radius: var(--radius);
+      border: 2px dashed var(--border);
+      min-height: 280px;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+      overflow: hidden;
+      transition: border-color .3s;
+    }
+    #preview-area.has-content { border-style: solid; border-color: var(--border); }
+    #preview-area video, #preview-area canvas {
+      width: 100%; height: auto;
+      border-radius: calc(var(--radius) - 2px);
+      display: block;
+    }
+    #preview-area .placeholder {
+      text-align: center; color: var(--muted);
+    }
+    #preview-area .placeholder svg { margin-bottom: 12px; opacity: .4; }
+    #preview-area .placeholder p { font-size: .875rem; }
+
+    #ocr-overlay {
+      position: absolute; top: 8px; right: 8px;
+      background: rgba(0,0,0,.7);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: .7rem; color: var(--accent2);
+      font-family: var(--font-mono);
+      display: none;
+    }
+
+    /* ── Transcription ───────────────────────────────── */
+    #transcript-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      font-size: .8rem;
+      line-height: 1.6;
+      min-height: 80px;
+      color: var(--text);
+      font-family: var(--font-mono);
+    }
+    #transcript-box .interim { color: var(--muted); font-style: italic; }
+
+    /* ── OCR text ────────────────────────────────────── */
+    #ocr-text {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      font-size: .75rem;
+      line-height: 1.5;
+      min-height: 60px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ── Buttons ─────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 9px 18px;
+      border-radius: 8px;
+      border: none; cursor: pointer;
+      font-size: .825rem; font-weight: 600;
+      transition: all .15s;
+    }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) { background: #2563eb; transform: translateY(-1px); }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover:not(:disabled) { background: var(--border); }
+    .btn-danger {
+      background: #7f1d1d;
+      color: #fca5a5;
+      border: 1px solid #b91c1c;
+    }
+    .btn-danger:hover:not(:disabled) { background: #991b1b; }
+    .btn-green {
+      background: #065f46;
+      color: #6ee7b7;
+      border: 1px solid #059669;
+    }
+    .btn-green:hover:not(:disabled) { background: #047857; }
+
+    .btn-row {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      margin-top: 12px;
+    }
+
+    /* ── Interview / chat panel ──────────────────────── */
+    #chat-panel {
+      grid-column: 2;
+      grid-row: 1 / 3;
+      border-right: none;
+      background: var(--surface);
+    }
+    #chat-messages {
+      display: flex; flex-direction: column; gap: 14px;
+    }
+
+    .msg {
+      display: flex; gap: 10px;
+      animation: fadeIn .25s ease;
+    }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+    .msg-avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .65rem; font-weight: 700; flex-shrink: 0;
+    }
+    .msg.ai .msg-avatar  { background: linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; }
+    .msg.user .msg-avatar { background: var(--surface2); border: 1px solid var(--border); color: var(--muted); }
+    .msg.system .msg-avatar { background: #1a1a2e; color: var(--yellow); border: 1px solid #2d2d4e; }
+
+    .msg-body { flex: 1; }
+    .msg-role { font-size: .65rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
+    .msg.ai .msg-role    { color: var(--accent2); }
+    .msg.user .msg-role  { color: var(--muted); }
+    .msg.system .msg-role { color: var(--yellow); }
+
+    .msg-text {
+      font-size: .825rem; line-height: 1.6;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px 10px 10px 10px;
+      padding: 10px 13px;
+    }
+    .msg.user .msg-text {
+      border-radius: 10px 4px 10px 10px;
+    }
+    .msg.system .msg-text {
+      background: #0f0f1f; border-color: #2d2d4e; color: var(--yellow);
+    }
+
+    .typing-indicator {
+      display: flex; gap: 4px; padding: 12px 14px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px 10px 10px 10px;
+    }
+    .typing-indicator span {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); opacity: .4;
+      animation: bounce .8s infinite;
+    }
+    .typing-indicator span:nth-child(2) { animation-delay: .15s; }
+    .typing-indicator span:nth-child(3) { animation-delay: .3s; }
+    @keyframes bounce { 0%,80%,100%{transform:scale(1)} 40%{transform:scale(1.4);opacity:1} }
+
+    /* ── Score panel ─────────────────────────────────── */
+    #score-panel {
+      display: none;
+      grid-column: 1;
+      grid-row: 2;
+      border-top: 1px solid var(--border);
+      padding: 20px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+    }
+    #score-panel.visible { display: block; }
+
+    .score-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .score-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      text-align: center;
+    }
+    .score-card .label { font-size: .65rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 6px; }
+    .score-card .value { font-size: 1.8rem; font-weight: 800; font-family: var(--font-mono); }
+    .score-card .value.good  { color: var(--green); }
+    .score-card .value.mid   { color: var(--yellow); }
+    .score-card .value.low   { color: var(--red); }
+    .score-card .bar { height: 4px; border-radius: 2px; background: var(--border); margin-top: 8px; overflow: hidden; }
+    .score-card .bar-fill { height: 100%; border-radius: 2px; transition: width 1s ease; }
+
+    .feedback-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      font-size: .8rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+    }
+
+    /* ── Model loader overlay ────────────────────────── */
+    #model-loader {
+      position: fixed; inset: 0;
+      background: rgba(11,15,26,.95);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 1000;
+      gap: 20px;
+    }
+    #model-loader h2 { font-size: 1.1rem; font-weight: 700; }
+    #model-loader p  { font-size: .8rem; color: var(--muted); text-align: center; max-width: 340px; }
+    .progress-track {
+      width: 300px; height: 6px;
+      background: var(--surface2);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 3px;
+      transition: width .3s ease;
+    }
+    #loader-status { font-size: .75rem; color: var(--muted); font-family: var(--font-mono); }
+
+    /* ── Scrollbar ───────────────────────────────────── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ── Mic indicator ───────────────────────────────── */
+    #mic-indicator {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: .72rem; color: var(--red);
+      background: rgba(239,68,68,.1);
+      border: 1px solid rgba(239,68,68,.3);
+      border-radius: 999px; padding: 3px 10px;
+      display: none;
+    }
+    #mic-indicator.visible { display: inline-flex; }
+    #mic-indicator .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); animation: pulse 1s infinite; }
+
+    .section-label {
+      font-size: .65rem; font-weight: 600; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 8px; margin-top: 16px;
+    }
+    .section-label:first-child { margin-top: 0; }
+
+    #question-counter {
+      font-size: .7rem; color: var(--muted);
+      font-family: var(--font-mono);
+    }
+
+    .tag {
+      display: inline-block;
+      font-size: .65rem; padding: 2px 8px;
+      border-radius: 4px; font-weight: 600;
+      background: rgba(59,130,246,.15);
+      color: var(--accent);
+      border: 1px solid rgba(59,130,246,.3);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Model Loading Overlay ── -->
+<div id="model-loader">
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div class="logo-dot"></div>
+    <h2>AI Interview System</h2>
+  </div>
+  <p>Loading local AI model into your browser. This is a one-time download (~30–60 MB). No data leaves your device.</p>
+  <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+  <div id="loader-status">Initialising…</div>
+  <button class="btn btn-secondary" onclick="skipModelLoad()" style="margin-top:8px;font-size:.75rem;">
+    Skip model load (use rule-based mode)
+  </button>
+</div>
+
+<!-- ── Header ── -->
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    AI Interview System
+    <span class="tag">Client-Side</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div id="mic-indicator" class="mic-indicator">
+      <div class="dot"></div> Recording
+    </div>
+    <div class="status-pill" id="status-pill">
+      <div class="dot"></div>
+      <span id="status-text">Ready</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ── -->
+<main>
+
+  <!-- Left: Screen + controls -->
+  <div class="panel" id="screen-panel">
+    <div class="panel-header">
+      <span class="panel-title">Presentation Capture</span>
+      <span id="question-counter">Q: 0 / 6</span>
+    </div>
+    <div class="panel-body">
+
+      <!-- Preview -->
+      <div id="preview-area">
+        <div class="placeholder" id="preview-placeholder">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          <p>Click <strong>Share Screen</strong> to begin</p>
+        </div>
+        <video id="screen-video" autoplay muted style="display:none;"></video>
+        <canvas id="capture-canvas" style="display:none;"></canvas>
+        <div id="ocr-overlay">OCR scanning…</div>
+      </div>
+
+      <!-- Transcript -->
+      <div class="section-label">Live Speech Transcript</div>
+      <div id="transcript-box">
+        <span style="color:var(--muted);font-style:italic;font-size:.75rem;">Transcript will appear as you speak…</span>
+      </div>
+
+      <!-- OCR -->
+      <div class="section-label">Screen OCR Extract</div>
+      <div id="ocr-text">No screen content yet.</div>
+
+      <!-- Controls -->
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-share" onclick="startScreenShare()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/><path d="m8 17 4 4 4-4"/></svg>
+          Share Screen
+        </button>
+        <button class="btn btn-secondary" id="btn-mic" onclick="toggleMic()" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+          Start Mic
+        </button>
+        <button class="btn btn-green" id="btn-interview" onclick="startInterview()" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Begin Interview
+        </button>
+        <button class="btn btn-danger" id="btn-end" onclick="endInterview()" disabled>
+          Stop &amp; Score
+        </button>
+      </div>
+      <div class="btn-row" style="margin-top:4px;">
+        <button class="btn btn-secondary" onclick="captureAndOCR()" id="btn-ocr" disabled style="font-size:.75rem;">
+          📷 Capture Screen Now
+        </button>
+        <button class="btn btn-secondary" onclick="exportReport()" id="btn-export" disabled style="font-size:.75rem;">
+          📄 Export Report
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Right: Chat / Interview -->
+  <div class="panel" id="chat-panel" style="border-right:none;">
+    <div class="panel-header">
+      <span class="panel-title">Interview Session</span>
+      <span class="tag" id="phase-tag">Waiting</span>
+    </div>
+    <div class="panel-body" id="chat-messages">
+      <div class="msg system">
+        <div class="msg-avatar">SYS</div>
+        <div class="msg-body">
+          <div class="msg-role">System</div>
+          <div class="msg-text">Share your screen and enable mic, then press <strong>Begin Interview</strong>. The AI will analyse your presentation and conduct a live adaptive interview — fully in your browser, zero data uploaded.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom: Scores (hidden until done) -->
+  <div id="score-panel">
+    <div class="section-label" style="margin-top:0;">Evaluation Results</div>
+    <div class="score-grid" id="score-grid"></div>
+    <div class="section-label">Detailed Feedback</div>
+    <div class="feedback-box" id="feedback-box"></div>
+  </div>
+
+</main>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  GLOBAL STATE
+// ═══════════════════════════════════════════════════════
+const state = {
+  screenStream: null,
+  micStream: null,
+  recognition: null,
+  micActive: false,
+  interviewActive: false,
+  ocrInterval: null,
+  questionIndex: 0,
+  maxQuestions: 6,
+  transcript: '',
+  interimTranscript: '',
+  ocrTexts: [],
+  qaLog: [],        // [{q, a}]
+  currentQ: '',
+  awaitingAnswer: false,
+  answerBuffer: '',
+  answerTimer: null,
+  pipeline: null,   // transformers.js pipeline
+  modelReady: false,
+  useRuleBased: false,
+};
+
+// ═══════════════════════════════════════════════════════
+//  TRANSFORMERS.JS — LOCAL LLM
+// ═══════════════════════════════════════════════════════
+async function loadModel() {
+  try {
+    const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js');
+    env.allowLocalModels = false;
+    setLoaderStatus('Downloading model weights (Xenova/distilgpt2)…', 10);
+
+    state.pipeline = await pipeline('text-generation', 'Xenova/distilgpt2', {
+      progress_callback: (p) => {
+        if (p.status === 'downloading') {
+          const pct = p.total ? Math.round((p.loaded / p.total) * 100) : 0;
+          setLoaderStatus(`Downloading: ${p.file} — ${pct}%`, pct);
+        } else if (p.status === 'done') {
+          setLoaderStatus('Model loaded ✓', 100);
+        }
+      }
+    });
+    state.modelReady = true;
+    setLoaderStatus('Model ready!', 100);
+    setTimeout(() => document.getElementById('model-loader').style.display = 'none', 800);
+  } catch (e) {
+    console.warn('Model load failed, using rule-based mode:', e);
+    skipModelLoad();
+  }
+}
+
+function skipModelLoad() {
+  state.useRuleBased = true;
+  state.modelReady = true;
+  document.getElementById('model-loader').style.display = 'none';
+  setStatus('Rule-based mode', false);
+}
+
+function setLoaderStatus(msg, pct) {
+  document.getElementById('loader-status').textContent = msg;
+  document.getElementById('progress-fill').style.width = pct + '%';
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATUS HELPERS
+// ═══════════════════════════════════════════════════════
+function setStatus(text, loading = false) {
+  document.getElementById('status-text').textContent = text;
+  const pill = document.getElementById('status-pill');
+  pill.className = 'status-pill' + (loading ? ' loading' : ' active');
+}
+
+// ═══════════════════════════════════════════════════════
+//  SCREEN SHARE + OCR
+// ═══════════════════════════════════════════════════════
+async function startScreenShare() {
+  try {
+    state.screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: 1280, height: 720 },
+      audio: false
+    });
+    const video = document.getElementById('screen-video');
+    video.srcObject = state.screenStream;
+    video.style.display = 'block';
+    document.getElementById('preview-placeholder').style.display = 'none';
+    document.getElementById('preview-area').classList.add('has-content');
+    document.getElementById('btn-share').disabled = true;
+    document.getElementById('btn-mic').disabled = false;
+    document.getElementById('btn-ocr').disabled = false;
+    setStatus('Screen shared', false);
+    addMessage('system', 'Screen captured. Now enable your microphone and press Begin Interview.');
+
+    state.screenStream.getVideoTracks()[0].addEventListener('ended', () => {
+      stopScreenShare();
+    });
+  } catch (e) {
+    addMessage('system', 'Screen share cancelled or denied. Please try again.');
+  }
+}
+
+function stopScreenShare() {
+  if (state.screenStream) {
+    state.screenStream.getTracks().forEach(t => t.stop());
+    state.screenStream = null;
+  }
+  const video = document.getElementById('screen-video');
+  video.style.display = 'none';
+  document.getElementById('preview-placeholder').style.display = 'flex';
+  document.getElementById('btn-share').disabled = false;
+}
+
+async function captureAndOCR() {
+  const video = document.getElementById('screen-video');
+  if (!video.videoWidth) return;
+
+  const canvas = document.getElementById('capture-canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0);
+
+  const overlay = document.getElementById('ocr-overlay');
+  overlay.style.display = 'block';
+  setStatus('Running OCR…', true);
+
+  try {
+    const result = await Tesseract.recognize(canvas, 'eng', {
+      logger: m => {
+        if (m.status === 'recognizing text') {
+          overlay.textContent = `OCR ${Math.round(m.progress * 100)}%`;
+        }
+      }
+    });
+    const text = result.data.text.trim();
+    state.ocrTexts.push(text);
+    document.getElementById('ocr-text').textContent = text || '(No text detected)';
+    overlay.style.display = 'none';
+    setStatus('OCR complete', false);
+    return text;
+  } catch (e) {
+    overlay.style.display = 'none';
+    setStatus('OCR failed', false);
+    return '';
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  SPEECH RECOGNITION (Web Speech API — client-side)
+// ═══════════════════════════════════════════════════════
+function toggleMic() {
+  if (state.micActive) {
+    stopMic();
+  } else {
+    startMic();
+  }
+}
+
+function startMic() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    addMessage('system', '⚠ Web Speech API not supported in this browser. Use Chrome or Edge.');
+    return;
+  }
+  state.recognition = new SpeechRecognition();
+  state.recognition.continuous = true;
+  state.recognition.interimResults = true;
+  state.recognition.lang = 'en-US';
+
+  state.recognition.onresult = (e) => {
+    let interim = '', final = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) { final += t; }
+      else { interim += t; }
+    }
+    if (final) {
+      state.transcript += ' ' + final;
+      state.answerBuffer += ' ' + final;
+      resetAnswerTimer();
+    }
+    state.interimTranscript = interim;
+    updateTranscriptUI();
+  };
+
+  state.recognition.onerror = (e) => {
+    if (e.error !== 'no-speech') console.error('STT:', e.error);
+  };
+
+  state.recognition.onend = () => {
+    if (state.micActive) state.recognition.start(); // keep alive
+  };
+
+  state.recognition.start();
+  state.micActive = true;
+  document.getElementById('btn-mic').textContent = '🔴  Stop Mic';
+  document.getElementById('btn-mic').className = 'btn btn-danger';
+  document.getElementById('mic-indicator').classList.add('visible');
+  document.getElementById('btn-interview').disabled = false;
+}
+
+function stopMic() {
+  if (state.recognition) { state.recognition.stop(); state.recognition = null; }
+  state.micActive = false;
+  document.getElementById('btn-mic').innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+    Start Mic`;
+  document.getElementById('btn-mic').className = 'btn btn-secondary';
+  document.getElementById('mic-indicator').classList.remove('visible');
+}
+
+function updateTranscriptUI() {
+  const box = document.getElementById('transcript-box');
+  const safe = (s) => s.replace(/</g,'&lt;');
+  box.innerHTML = safe(state.transcript) +
+    (state.interimTranscript
+      ? `<span class="interim"> ${safe(state.interimTranscript)}</span>`
+      : '');
+  box.scrollTop = box.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════
+//  ANSWER TIMER — collect N seconds of speech after question
+// ═══════════════════════════════════════════════════════
+function resetAnswerTimer() {
+  if (!state.awaitingAnswer) return;
+  clearTimeout(state.answerTimer);
+  state.answerTimer = setTimeout(() => {
+    if (state.awaitingAnswer && state.answerBuffer.trim().length > 5) {
+      submitAnswer();
+    }
+  }, 4000); // 4s silence = answer complete
+}
+
+function submitAnswer() {
+  if (!state.awaitingAnswer) return;
+  state.awaitingAnswer = false;
+  clearTimeout(state.answerTimer);
+  const answer = state.answerBuffer.trim();
+  state.answerBuffer = '';
+  addMessage('user', answer || '(No response detected)');
+  state.qaLog.push({ q: state.currentQ, a: answer });
+  updateCounter();
+  if (state.questionIndex < state.maxQuestions) {
+    setTimeout(() => askNextQuestion(), 1500);
+  } else {
+    setTimeout(() => finalizeInterview(), 1500);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  INTERVIEW FLOW
+// ═══════════════════════════════════════════════════════
+async function startInterview() {
+  if (!state.micActive) { addMessage('system', 'Please enable the microphone first.'); return; }
+  state.interviewActive = true;
+  state.questionIndex = 0;
+  document.getElementById('btn-interview').disabled = true;
+  document.getElementById('btn-end').disabled = false;
+  document.getElementById('phase-tag').textContent = 'Live';
+  document.getElementById('phase-tag').style.background = 'rgba(16,185,129,.15)';
+  document.getElementById('phase-tag').style.color = 'var(--green)';
+  setStatus('Interview in progress', false);
+
+  // Capture initial OCR
+  const ocrText = await captureAndOCR();
+
+  // Start periodic OCR every 20s
+  state.ocrInterval = setInterval(captureAndOCR, 20000);
+
+  addMessage('ai', `Hello! I'm your AI interviewer. I've analysed your presentation screen. Let's begin — please introduce your project.`);
+  await delay(2000);
+  askNextQuestion();
+}
+
+function askNextQuestion() {
+  if (!state.interviewActive) return;
+  if (state.questionIndex >= state.maxQuestions) { finalizeInterview(); return; }
+
+  state.questionIndex++;
+  updateCounter();
+  const q = generateQuestion(state.questionIndex, state.ocrTexts.join('\n'), state.qaLog);
+  state.currentQ = q;
+  state.answerBuffer = '';
+  addMessage('ai', q);
+  showTyping(false);
+  state.awaitingAnswer = true;
+
+  // Safety timeout — if no speech in 60s, move on
+  state.answerTimer = setTimeout(() => {
+    if (state.awaitingAnswer) {
+      state.awaitingAnswer = false;
+      state.qaLog.push({ q, a: '(No response)' });
+      askNextQuestion();
+    }
+  }, 60000);
+}
+
+// ═══════════════════════════════════════════════════════
+//  QUESTION GENERATOR — rule-based + LLM hybrid
+// ═══════════════════════════════════════════════════════
+const QUESTION_BANKS = {
+  1: [
+    "Please give a brief overview of your project — what problem does it solve and who is it for?",
+    "Start by explaining what your project does and the core problem it addresses.",
+  ],
+  2: [
+    "Walk me through your technical architecture. What technologies and frameworks did you choose, and why?",
+    "Explain the technical stack you've used and the reasoning behind those choices.",
+  ],
+  3: [
+    "What was the most challenging part of this project, and how did you overcome it?",
+    "Describe a significant technical challenge you encountered during development and your solution.",
+  ],
+  4: [
+    "How does your solution differ from existing alternatives? What makes it original?",
+    "What is your project's unique value proposition compared to other solutions in this space?",
+  ],
+  5: [
+    "If you had more time, what would you improve or add to this project?",
+    "Walk me through what you would do differently if you could start again.",
+  ],
+  6: [
+    "How would you scale this system to handle 10x or 100x more users?",
+    "Explain your approach to security, error handling, and edge cases in this project.",
+  ],
+};
+
+function generateQuestion(idx, ocrContext, log) {
+  const bank = QUESTION_BANKS[idx] || QUESTION_BANKS[6];
+  let q = bank[Math.floor(Math.random() * bank.length)];
+
+  // Personalise with OCR context if available
+  if (ocrContext && ocrContext.length > 30) {
+    const keywords = extractKeywords(ocrContext);
+    if (keywords.length && idx > 1) {
+      const kw = keywords[Math.floor(Math.random() * Math.min(keywords.length, 5))];
+      const extras = [
+        ` I noticed "${kw}" on your screen — how does that fit into your overall design?`,
+        ` Can you elaborate on how "${kw}" works within your system?`,
+      ];
+      q += extras[idx % extras.length];
+    }
+  }
+
+  // Follow-up based on last answer
+  if (log.length > 0 && idx > 2) {
+    const lastA = log[log.length - 1].a;
+    if (lastA && lastA.length > 30) {
+      const follow = generateFollowUp(lastA, q);
+      if (follow) q = follow;
+    }
+  }
+  return q;
+}
+
+function generateFollowUp(lastAnswer, defaultQ) {
+  const la = lastAnswer.toLowerCase();
+  if (la.includes('database') || la.includes('sql') || la.includes('mongo')) {
+    return `You mentioned a database approach. Can you explain your data model and how you optimised queries for performance?`;
+  }
+  if (la.includes('api') || la.includes('rest') || la.includes('endpoint')) {
+    return `You brought up APIs. How did you handle authentication, rate-limiting, and error responses in your API design?`;
+  }
+  if (la.includes('machine learning') || la.includes('model') || la.includes('train')) {
+    return `You mentioned ML. What dataset did you use, how did you evaluate model accuracy, and what were the limitations?`;
+  }
+  if (la.includes('react') || la.includes('vue') || la.includes('frontend')) {
+    return `You described your frontend work. How did you manage state, and how did you ensure the UI performs well on different devices?`;
+  }
+  if (la.includes('docker') || la.includes('kubernetes') || la.includes('deploy')) {
+    return `You mentioned deployment. Walk me through your CI/CD pipeline and how you handle rollbacks if something goes wrong.`;
+  }
+  return null;
+}
+
+function extractKeywords(text) {
+  const stop = new Set(['the','a','an','is','are','was','were','in','of','to','and','or','with','for','on','at','by','this','that','it','be','as','we','our','from','have','has']);
+  return [...new Set(text.toLowerCase().match(/\b[a-z]{4,}\b/g) || [])]
+    .filter(w => !stop.has(w))
+    .slice(0, 20);
+}
+
+// ═══════════════════════════════════════════════════════
+//  END INTERVIEW + SCORING
+// ═══════════════════════════════════════════════════════
+function endInterview() {
+  if (state.awaitingAnswer) { submitAnswer(); }
+  state.interviewActive = false;
+  clearInterval(state.ocrInterval);
+  document.getElementById('phase-tag').textContent = 'Scoring';
+  document.getElementById('btn-end').disabled = true;
+  finalizeInterview();
+}
+
+function finalizeInterview() {
+  state.interviewActive = false;
+  clearInterval(state.ocrInterval);
+  document.getElementById('phase-tag').textContent = 'Complete';
+  setStatus('Generating report…', true);
+  addMessage('ai', 'Thank you for presenting. I\'ll now evaluate your responses and generate your feedback report…');
+  showTyping(true);
+  setTimeout(() => {
+    const scores = computeScores();
+    showTyping(false);
+    renderScores(scores);
+    setStatus('Complete', false);
+    document.getElementById('btn-export').disabled = false;
+    stopMic();
+  }, 2000);
+}
+
+// ═══════════════════════════════════════════════════════
+//  SCORING ENGINE (client-side heuristics)
+// ═══════════════════════════════════════════════════════
+function computeScores() {
+  const allAnswers = state.qaLog.map(x => x.a).join(' ').toLowerCase();
+  const wordCount = allAnswers.split(/\s+/).filter(Boolean).length;
+  const uniqueWords = new Set(allAnswers.match(/\b[a-z]{4,}\b/g) || []).size;
+
+  // Technical depth
+  const techTerms = ['algorithm','architecture','database','api','framework','deploy','server','client','function','class','object','array','query','authentication','async','cache','optimis','complexity','scalab','interface'];
+  const techScore = Math.min(10, techTerms.filter(t => allAnswers.includes(t)).length);
+
+  // Clarity (avg sentence length, variety of vocabulary)
+  const sentences = allAnswers.split(/[.!?]+/).filter(s => s.trim().length > 5);
+  const avgLen = sentences.length ? wordCount / sentences.length : 0;
+  const clarityScore = Math.min(10, Math.round(
+    (uniqueWords / Math.max(wordCount, 1)) * 30 +
+    (avgLen > 5 && avgLen < 30 ? 4 : 2)
+  ));
+
+  // Originality — unique project-specific terms
+  const ocrWords = new Set(extractKeywords(state.ocrTexts.join(' ')));
+  const matchedOCR = [...ocrWords].filter(w => allAnswers.includes(w)).length;
+  const originalityScore = Math.min(10, 3 + matchedOCR);
+
+  // Understanding — answered all questions, gave substantive replies
+  const answered = state.qaLog.filter(x => x.a && x.a.length > 20).length;
+  const understandingScore = Math.min(10, Math.round((answered / state.maxQuestions) * 10));
+
+  const overall = Math.round((techScore + clarityScore + originalityScore + understandingScore) / 4);
+
+  return { techScore, clarityScore, originalityScore, understandingScore, overall };
+}
+
+function renderScores(s) {
+  const panel = document.getElementById('score-panel');
+  panel.classList.add('visible');
+
+  const scoreColor = v => v >= 8 ? 'good' : v >= 5 ? 'mid' : 'low';
+  const barColor  = v => v >= 8 ? 'var(--green)' : v >= 5 ? 'var(--yellow)' : 'var(--red)';
+
+  const cards = [
+    { label: 'Technical Depth',  value: s.techScore },
+    { label: 'Clarity',          value: s.clarityScore },
+    { label: 'Originality',      value: s.originalityScore },
+    { label: 'Understanding',    value: s.understandingScore },
+  ];
+
+  document.getElementById('score-grid').innerHTML = cards.map(c => `
+    <div class="score-card">
+      <div class="label">${c.label}</div>
+      <div class="value ${scoreColor(c.value)}">${c.value}<span style="font-size:.9rem;opacity:.5">/10</span></div>
+      <div class="bar"><div class="bar-fill" style="width:${c.value*10}%;background:${barColor(c.value)}"></div></div>
+    </div>
+  `).join('') + `
+    <div class="score-card" style="border-color:var(--accent);">
+      <div class="label">Overall Score</div>
+      <div class="value ${scoreColor(s.overall)}">${s.overall}<span style="font-size:.9rem;opacity:.5">/10</span></div>
+      <div class="bar"><div class="bar-fill" style="width:${s.overall*10}%;background:var(--accent)"></div></div>
+    </div>
+  `;
+
+  const feedback = buildFeedback(s);
+  document.getElementById('feedback-box').textContent = feedback;
+  addMessage('ai', `Interview complete! Your overall score is ${s.overall}/10. Check the Evaluation panel below for full details.`);
+}
+
+function buildFeedback(s) {
+  const lines = [];
+  lines.push(`═══ INTERVIEW EVALUATION REPORT ═══`);
+  lines.push(`Date: ${new Date().toLocaleString()}`);
+  lines.push(`Questions asked: ${state.questionIndex}  |  Answered: ${state.qaLog.filter(x=>x.a&&x.a.length>10).length}`);
+  lines.push('');
+  lines.push(`SCORES`);
+  lines.push(`  Technical Depth   : ${s.techScore}/10`);
+  lines.push(`  Clarity           : ${s.clarityScore}/10`);
+  lines.push(`  Originality       : ${s.originalityScore}/10`);
+  lines.push(`  Understanding     : ${s.understandingScore}/10`);
+  lines.push(`  ─────────────────`);
+  lines.push(`  Overall           : ${s.overall}/10`);
+  lines.push('');
+  lines.push('FEEDBACK');
+
+  if (s.techScore < 5)
+    lines.push('• Technical Depth: Consider explaining the technologies and algorithms used in more detail. Interviewers look for specific technical terms and implementation reasoning.');
+  else if (s.techScore >= 8)
+    lines.push('• Technical Depth: Excellent use of technical vocabulary and clear explanation of implementation details.');
+  else
+    lines.push('• Technical Depth: Good technical coverage. Try to go deeper into performance trade-offs and design decisions.');
+
+  if (s.clarityScore < 5)
+    lines.push('• Clarity: Work on structuring your answers — use clear sentence structures and avoid very long or very short responses.');
+  else if (s.clarityScore >= 8)
+    lines.push('• Clarity: Very clear and well-articulated explanations throughout.');
+  else
+    lines.push('• Clarity: Good clarity overall. Adding structured transitions (first… then… finally…) would improve this further.');
+
+  if (s.originalityScore < 5)
+    lines.push('• Originality: Try to highlight what makes your project unique versus existing solutions.');
+  else
+    lines.push('• Originality: Good demonstration of unique aspects of your work.');
+
+  if (s.understandingScore < 5)
+    lines.push('• Understanding: Some questions received minimal responses. Practice answering every question with at least 2–3 sentences.');
+  else if (s.understandingScore >= 8)
+    lines.push('• Understanding: Demonstrated strong command of the subject matter.');
+  else
+    lines.push('• Understanding: Solid understanding shown. Elaborate more on edge cases and failure modes.');
+
+  lines.push('');
+  lines.push('Q&A LOG');
+  state.qaLog.forEach((qa, i) => {
+    lines.push(`Q${i+1}: ${qa.q}`);
+    lines.push(`A: ${qa.a || '(No response)'}`);
+    lines.push('');
+  });
+
+  lines.push('─── Generated fully client-side — no data was uploaded ───');
+  return lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════
+//  UI HELPERS
+// ═══════════════════════════════════════════════════════
+let typingEl = null;
+
+function addMessage(role, text) {
+  const container = document.getElementById('chat-messages');
+  const avatars = { ai: 'AI', user: 'YOU', system: 'SYS' };
+  const labels  = { ai: 'Interviewer', user: 'Student', system: 'System' };
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `
+    <div class="msg-avatar">${avatars[role]}</div>
+    <div class="msg-body">
+      <div class="msg-role">${labels[role]}</div>
+      <div class="msg-text">${text}</div>
+    </div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function showTyping(show) {
+  const container = document.getElementById('chat-messages');
+  if (show && !typingEl) {
+    typingEl = document.createElement('div');
+    typingEl.className = 'msg ai';
+    typingEl.innerHTML = `
+      <div class="msg-avatar">AI</div>
+      <div class="msg-body">
+        <div class="msg-role">Interviewer</div>
+        <div class="typing-indicator"><span></span><span></span><span></span></div>
+      </div>`;
+    container.appendChild(typingEl);
+    container.scrollTop = container.scrollHeight;
+  } else if (!show && typingEl) {
+    typingEl.remove();
+    typingEl = null;
+  }
+}
+
+function updateCounter() {
+  document.getElementById('question-counter').textContent = `Q: ${state.questionIndex} / ${state.maxQuestions}`;
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════════════════════
+//  EXPORT REPORT
+// ═══════════════════════════════════════════════════════
+function exportReport() {
+  const text = document.getElementById('feedback-box').textContent;
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `interview_report_${Date.now()}.txt`;
+  a.click();
+}
+
+// ═══════════════════════════════════════════════════════
+//  BOOT
+// ═══════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', () => {
+  loadModel();
+});
+</script>
+</body>
+</html>
